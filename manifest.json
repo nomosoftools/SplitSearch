@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "SplitSearch Focus Mode",
-  "version": "1.3",
-  "permissions": ["contextMenus", "tabs", "windows", "system.display"],
+  "name": "SplitSearch Tool",
+  "version": "1.5",
+  "permissions": ["contextMenus", "tabs", "windows", "storage", "system.display"],
   "background": {
     "service_worker": "background.js"
   }
