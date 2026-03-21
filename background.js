@@ -1,10 +1,11 @@
-let searchWindowId = null;
+// We no longer use 'let searchWindowId' at the top because it's not persistent.
 
-// ADDED: 1. Clean it up after we close the whole window.
 chrome.windows.onRemoved.addListener((windowId) => {
-  if (windowId === searchWindowId) {
-    searchWindowId = null;
-  }
+  chrome.storage.local.get(['searchWindowId'], (result) => {
+    if (windowId === result.searchWindowId) {
+      chrome.storage.local.remove('searchWindowId');
+    }
+  });
 });
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -23,20 +24,15 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     const url = `https://www.google.com/search?q=${query}`;
 
     chrome.windows.getLastFocused({populate: false}, (currentWin) => {
-      
-      if (!currentWin || currentWin.id === chrome.windows.WINDOW_ID_NONE) {
-        return;
-      }
+      if (!currentWin || currentWin.id === chrome.windows.WINDOW_ID_NONE) return;
 
-      // GLOBAL REORGANIZE: Use the display's total available space instead of current window width
-      // This ensures 50/50 split of the whole screen in all cases.
       chrome.system.display.getInfo((displays) => {
         const primaryDisplay = displays[0].workArea;
         const screenW = primaryDisplay.width;
         const screenH = primaryDisplay.height;
         const halfWidth = Math.round(screenW / 2);
 
-        // 1. SNAP DOCUMENT TO LEFT HALF OF SCREEN
+        // 1. SNAP DOCUMENT TO LEFT
         chrome.windows.update(currentWin.id, {
           left: primaryDisplay.left,
           top: primaryDisplay.top,
@@ -47,32 +43,36 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 
         const searchLeft = primaryDisplay.left + halfWidth;
 
-        // 2. SNAP SEARCH TO RIGHT HALF OF SCREEN
-        if (searchWindowId !== null) {
-          chrome.windows.get(searchWindowId, (win) => {
-            if (chrome.runtime.lastError || !win) {
-              searchWindowId = null;
-              createNewSearchWindow(url, searchLeft, primaryDisplay.top, halfWidth, screenH);
-            } else {
-              chrome.tabs.query({ windowId: searchWindowId, active: true }, (tabs) => {
-                if (tabs.length > 0) {
-                  chrome.tabs.update(tabs[0].id, { url: url });
-                  chrome.windows.update(searchWindowId, { 
-                    left: searchLeft, 
-                    top: primaryDisplay.top, 
-                    width: halfWidth, 
-                    height: screenH, 
-                    focused: true 
-                  });
-                } else {
-                  createNewSearchWindow(url, searchLeft, primaryDisplay.top, halfWidth, screenH);
-                }
-              });
-            }
-          });
-        } else {
-          createNewSearchWindow(url, searchLeft, primaryDisplay.top, halfWidth, screenH);
-        }
+        // 2. RETRIEVE PERSISTENT ID FROM STORAGE
+        chrome.storage.local.get(['searchWindowId'], (result) => {
+          const savedId = result.searchWindowId;
+
+          if (savedId) {
+            chrome.windows.get(savedId, (win) => {
+              if (chrome.runtime.lastError || !win) {
+                // Window was closed while extension was sleeping
+                createNewSearchWindow(url, searchLeft, primaryDisplay.top, halfWidth, screenH);
+              } else {
+                chrome.tabs.query({ windowId: savedId, active: true }, (tabs) => {
+                  if (tabs && tabs.length > 0) {
+                    chrome.tabs.update(tabs[0].id, { url: url });
+                    chrome.windows.update(savedId, { 
+                      left: searchLeft, 
+                      top: primaryDisplay.top, 
+                      width: halfWidth, 
+                      height: screenH, 
+                      focused: true 
+                    });
+                  } else {
+                    createNewSearchWindow(url, searchLeft, primaryDisplay.top, halfWidth, screenH);
+                  }
+                });
+              }
+            });
+          } else {
+            createNewSearchWindow(url, searchLeft, primaryDisplay.top, halfWidth, screenH);
+          }
+        });
       });
     });
   }
@@ -88,6 +88,7 @@ function createNewSearchWindow(url, left, top, width, height) {
     focused: true,
     type: "normal"
   }, (newWin) => {
-    searchWindowId = newWin.id;
+    // Save the ID to storage so it survives service worker hibernation
+    chrome.storage.local.set({ searchWindowId: newWin.id });
   });
 }
