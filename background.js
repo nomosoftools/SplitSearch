@@ -1,5 +1,3 @@
-// We no longer use 'let searchWindowId' at the top because it's not persistent.
-
 chrome.windows.onRemoved.addListener((windowId) => {
   chrome.storage.local.get(['searchWindowId'], (result) => {
     if (windowId === result.searchWindowId) {
@@ -32,46 +30,47 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
         const screenH = primaryDisplay.height;
         const halfWidth = Math.round(screenW / 2);
 
-        // 1. SNAP DOCUMENT TO LEFT
+        // FIX FOR VENTURA: Force state to "normal" explicitly. 
+        // If a window is 'maximized', macOS Ventura ignores 'width' and 'left' updates.
         chrome.windows.update(currentWin.id, {
+          state: "normal", 
           left: primaryDisplay.left,
           top: primaryDisplay.top,
           width: halfWidth,
-          height: screenH,
-          state: "normal"
-        });
+          height: screenH
+        }, () => {
+          // Callback ensures the first window is moved before we position the second
+          const searchLeft = primaryDisplay.left + halfWidth;
 
-        const searchLeft = primaryDisplay.left + halfWidth;
+          chrome.storage.local.get(['searchWindowId'], (result) => {
+            const savedId = result.searchWindowId;
 
-        // 2. RETRIEVE PERSISTENT ID FROM STORAGE
-        chrome.storage.local.get(['searchWindowId'], (result) => {
-          const savedId = result.searchWindowId;
-
-          if (savedId) {
-            chrome.windows.get(savedId, (win) => {
-              if (chrome.runtime.lastError || !win) {
-                // Window was closed while extension was sleeping
-                createNewSearchWindow(url, searchLeft, primaryDisplay.top, halfWidth, screenH);
-              } else {
-                chrome.tabs.query({ windowId: savedId, active: true }, (tabs) => {
-                  if (tabs && tabs.length > 0) {
-                    chrome.tabs.update(tabs[0].id, { url: url });
-                    chrome.windows.update(savedId, { 
-                      left: searchLeft, 
-                      top: primaryDisplay.top, 
-                      width: halfWidth, 
-                      height: screenH, 
-                      focused: true 
-                    });
-                  } else {
-                    createNewSearchWindow(url, searchLeft, primaryDisplay.top, halfWidth, screenH);
-                  }
-                });
-              }
-            });
-          } else {
-            createNewSearchWindow(url, searchLeft, primaryDisplay.top, halfWidth, screenH);
-          }
+            if (savedId) {
+              chrome.windows.get(savedId, (win) => {
+                if (chrome.runtime.lastError || !win) {
+                  createNewSearchWindow(url, searchLeft, primaryDisplay.top, halfWidth, screenH);
+                } else {
+                  chrome.tabs.query({ windowId: savedId, active: true }, (tabs) => {
+                    if (tabs && tabs.length > 0) {
+                      chrome.tabs.update(tabs[0].id, { url: url });
+                      chrome.windows.update(savedId, { 
+                        state: "normal", // Force normal state here too
+                        left: searchLeft, 
+                        top: primaryDisplay.top, 
+                        width: halfWidth, 
+                        height: screenH, 
+                        focused: true 
+                      });
+                    } else {
+                      createNewSearchWindow(url, searchLeft, primaryDisplay.top, halfWidth, screenH);
+                    }
+                  });
+                }
+              });
+            } else {
+              createNewSearchWindow(url, searchLeft, primaryDisplay.top, halfWidth, screenH);
+            }
+          });
         });
       });
     });
@@ -86,9 +85,9 @@ function createNewSearchWindow(url, left, top, width, height) {
     width: width,
     height: height,
     focused: true,
-    type: "normal"
+    type: "normal",
+    state: "normal" // Ensure it doesn't open maximized
   }, (newWin) => {
-    // Save the ID to storage so it survives service worker hibernation
     chrome.storage.local.set({ searchWindowId: newWin.id });
   });
 }
