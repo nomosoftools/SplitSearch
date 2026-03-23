@@ -30,47 +30,49 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
         const screenH = primaryDisplay.height;
         const halfWidth = Math.round(screenW / 2);
 
-        // FIX FOR VENTURA: Force state to "normal" explicitly. 
-        // If a window is 'maximized', macOS Ventura ignores 'width' and 'left' updates.
-        chrome.windows.update(currentWin.id, {
-          state: "normal", 
-          left: primaryDisplay.left,
-          top: primaryDisplay.top,
-          width: halfWidth,
-          height: screenH
-        }, () => {
-          // Callback ensures the first window is moved before we position the second
-          const searchLeft = primaryDisplay.left + halfWidth;
+        // VENTURA FIX: Set state to 'normal' first, then wait 150ms to resize.
+        chrome.windows.update(currentWin.id, { state: "normal" }, () => {
+          setTimeout(() => {
+            chrome.windows.update(currentWin.id, {
+              left: primaryDisplay.left,
+              top: primaryDisplay.top,
+              width: halfWidth,
+              height: screenH
+            });
 
-          chrome.storage.local.get(['searchWindowId'], (result) => {
-            const savedId = result.searchWindowId;
+            const searchLeft = primaryDisplay.left + halfWidth;
 
-            if (savedId) {
-              chrome.windows.get(savedId, (win) => {
-                if (chrome.runtime.lastError || !win) {
-                  createNewSearchWindow(url, searchLeft, primaryDisplay.top, halfWidth, screenH);
-                } else {
-                  chrome.tabs.query({ windowId: savedId, active: true }, (tabs) => {
-                    if (tabs && tabs.length > 0) {
-                      chrome.tabs.update(tabs[0].id, { url: url });
-                      chrome.windows.update(savedId, { 
-                        state: "normal", // Force normal state here too
-                        left: searchLeft, 
-                        top: primaryDisplay.top, 
-                        width: halfWidth, 
-                        height: screenH, 
-                        focused: true 
-                      });
-                    } else {
-                      createNewSearchWindow(url, searchLeft, primaryDisplay.top, halfWidth, screenH);
-                    }
-                  });
-                }
-              });
-            } else {
-              createNewSearchWindow(url, searchLeft, primaryDisplay.top, halfWidth, screenH);
-            }
-          });
+            chrome.storage.local.get(['searchWindowId'], (result) => {
+              const savedId = result.searchWindowId;
+
+              if (savedId) {
+                chrome.windows.get(savedId, (win) => {
+                  if (chrome.runtime.lastError || !win) {
+                    createNewSearchWindow(url, searchLeft, primaryDisplay.top, halfWidth, screenH);
+                  } else {
+                    chrome.tabs.query({ windowId: savedId, active: true }, (tabs) => {
+                      if (tabs && tabs.length > 0) {
+                        chrome.tabs.update(tabs[0].id, { url: url });
+                        // Apply the same 'normal' state logic to the search window
+                        chrome.windows.update(savedId, { 
+                          state: "normal",
+                          left: searchLeft, 
+                          top: primaryDisplay.top, 
+                          width: halfWidth, 
+                          height: screenH, 
+                          focused: true 
+                        });
+                      } else {
+                        createNewSearchWindow(url, searchLeft, primaryDisplay.top, halfWidth, screenH);
+                      }
+                    });
+                  }
+                });
+              } else {
+                createNewSearchWindow(url, searchLeft, primaryDisplay.top, halfWidth, screenH);
+              }
+            });
+          }, 150); // The 150ms buffer allows the OS to process the "un-maximize"
         });
       });
     });
@@ -86,7 +88,7 @@ function createNewSearchWindow(url, left, top, width, height) {
     height: height,
     focused: true,
     type: "normal",
-    state: "normal" // Ensure it doesn't open maximized
+    state: "normal"
   }, (newWin) => {
     chrome.storage.local.set({ searchWindowId: newWin.id });
   });
