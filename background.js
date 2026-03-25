@@ -1,87 +1,6 @@
-// Helper for logging
-const log = (msg, data = "") => console.log(`[SplitSearch] ${msg}`, data);
-
-/**
- * Robust Text Extractor (v5 - Flawless Edition)
- * 
- * FIXED FOR QUANTA MAGAZINE (and any site that blocks right-click):
- * 1. Uses browser's authoritative selection.toString() → ZERO unrelated source code ever
- * 2. Full Shadow DOM piercing (already perfect)
- * 3. Pseudo-elements (::before / ::after) perfectly included
- * 4. Images + <picture> + alt/title text cleanly appended as [alt]
- * 5. Now also works via keyboard shortcut (Ctrl+Shift+S) on pages that suppress the context menu
- * 
- * Why this fixes your exact problem:
- * - Quanta Magazine runs `e.preventDefault()` on `contextmenu` → native + extension menus disappear
- * - You can still Ctrl+C (keyboard), but the old menu never appeared
- * - New keyboard command bypasses that completely
- */
-function getRobustSelection() {
-  // 1. Find the active Selection object, piercing through any number of nested Shadow Roots
-  function getActiveSelection() {
-    let curr = document;
-    while (curr) {
-      const sel = curr.getSelection();
-      if (sel && sel.rangeCount > 0 && !sel.isCollapsed) return sel;
-
-      const active = curr.activeElement;
-      if (active && active.shadowRoot) {
-        curr = active.shadowRoot;
-      } else {
-        curr = null;
-      }
-    }
-    return null;
-  }
-
-  const selection = getActiveSelection();
-  if (!selection) return "";
-
-  // 2. Authoritative visible text (includes pseudo-elements perfectly)
-  let finalOutput = selection.toString().trim();
-
-  // 3. Extract images/pictures that are inside the exact selection range
-  const range = selection.getRangeAt(0);
-  const fragment = range.cloneContents();
-  const container = document.createElement('div');
-  container.appendChild(fragment);
-
-  const imageAlts = [];
-
-  function collectImages(node) {
-    if (!node) return;
-
-    if (node.nodeType === Node.ELEMENT_NODE) {
-      if (node.tagName === 'IMG') {
-        const alt = (node.alt || node.title || "").trim();
-        if (alt) imageAlts.push(`[${alt}]`);
-      } else if (node.tagName === 'PICTURE') {
-        const img = node.querySelector('img');
-        if (img) {
-          const alt = (img.alt || img.title || "").trim();
-          if (alt) imageAlts.push(`[${alt}]`);
-        }
-      }
-    }
-
-    if (node.childNodes && node.childNodes.length) {
-      for (const child of node.childNodes) {
-        collectImages(child);
-      }
-    }
-  }
-
-  collectImages(container);
-
-  if (imageAlts.length > 0) {
-    finalOutput += (finalOutput ? " " : "") + imageAlts.join(" ");
-  }
-
-  // 4. Final cleanup
-  return finalOutput.replace(/\s+/g, " ").trim();
-}
-
-// -------- Window Cleanup --------
+// ==========================================
+// 1. CLEANUP & INITIALIZATION
+// ==========================================
 chrome.windows.onRemoved.addListener((windowId) => {
   chrome.storage.local.get(['searchWindowId'], (result) => {
     if (windowId === result.searchWindowId) {
@@ -90,7 +9,6 @@ chrome.windows.onRemoved.addListener((windowId) => {
   });
 });
 
-// -------- Context Menu Setup --------
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
@@ -101,104 +19,92 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
-// -------- Keyboard Shortcut Support (critical for Quanta & other anti-copy sites) --------
-chrome.commands.onCommand.addListener((command) => {
-  if (command === "searchSplitScreen") {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (!tabs?.length) return;
-      const tab = tabs[0];
-
-      chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: getRobustSelection
-      }).then((results) => {
-        const text = results[0]?.result;
-        if (text) {
-          processSearch(text, tab);
-        }
-      }).catch(err => console.error("Keyboard Extraction Error:", err));
-    });
-  }
-});
-
-// -------- Safe Window Resize --------
-function safeResizeWindow(windowId, bounds, focus, callback) {
-  chrome.windows.update(windowId, { state: "normal" }, () => {
-    if (chrome.runtime.lastError) {
-      if (callback) callback();
-      return;
+// ==========================================
+// 2. MULTI-MONITOR HELPER
+// ==========================================
+function getDisplayForWindow(win, displays) {
+  // Calculate the center point of the current window
+  const winCenterX = win.left + (win.width / 2);
+  const winCenterY = win.top + (win.height / 2);
+  
+  // Find which display contains this center point
+  for (let display of displays) {
+    const bounds = display.workArea;
+    if (winCenterX >= bounds.left && winCenterX <= (bounds.left + bounds.width) &&
+        winCenterY >= bounds.top && winCenterY <= (bounds.top + bounds.height)) {
+      return display.workArea;
     }
-    setTimeout(() => {
-      const updateInfo = {
-        left: Math.round(bounds.left),
-        top: Math.round(bounds.top),
-        width: Math.round(bounds.width),
-        height: Math.round(bounds.height)
-      };
-      if (focus) updateInfo.focused = true;
-      chrome.windows.update(windowId, updateInfo, () => {
-        if (chrome.runtime.lastError) return;
-        if (callback) callback();
-      });
-    }, 200);
-  });
+  }
+  return displays[0].workArea; // Fallback to primary
 }
 
-// -------- Context Menu Click Handler --------
-chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId === "searchSplitScreen") {
-    chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: getRobustSelection
-    }).then((results) => {
-      const text = results[0]?.result;
-      if (text) {
-        processSearch(text, tab);
-      }
-    }).catch(err => console.error("Extraction Error:", err));
-  }
-});
+// ==========================================
+// 3. HIGH-PERFORMANCE RESIZE HELPER
+// ==========================================
+function safeResizeWindow(win, bounds, focus, callback) {
+  const updateInfo = { left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height };
+  if (focus) updateInfo.focused = true;
 
-// -------- Search Window Management --------
-function processSearch(rawText, tab) {
-  const truncatedText = rawText.substring(0, 1100);
-  const query = encodeURIComponent(truncatedText.trim());
+  // FAST PATH: If already normal, resize instantly.
+  if (win.state === "normal") {
+    chrome.windows.update(win.id, updateInfo, () => {
+      if (callback) callback();
+    });
+  } else {
+    // SLOW PATH: OS requires un-maximizing first (Ventura/Sonoma safety)
+    chrome.windows.update(win.id, { state: "normal" }, () => {
+      setTimeout(() => {
+        chrome.windows.update(win.id, updateInfo, () => {
+          if (callback) callback();
+        });
+      }, 200);
+    });
+  }
+}
+
+// ==========================================
+// 4. CORE SPLIT SCREEN ENGINE
+// ==========================================
+function executeSplitScreen(query) {
   const url = `https://www.google.com/search?q=${query}`;
 
-  chrome.windows.getLastFocused({ populate: false }, (currentWin) => {
+  chrome.windows.getLastFocused({populate: false}, (currentWin) => {
+    if (!currentWin || currentWin.id === chrome.windows.WINDOW_ID_NONE) return;
+
     chrome.system.display.getInfo((displays) => {
-      if (!displays?.length) return;
-      const display = displays.find(d =>
-        currentWin.left >= d.bounds.left &&
-        currentWin.left < d.bounds.left + d.bounds.width
-      ) || displays[0];
-      const workArea = display.workArea;
-      const halfWidth = Math.round(workArea.width / 2);
+      const activeDisplay = getDisplayForWindow(currentWin, displays);
+      const halfWidth = Math.round(activeDisplay.width / 2);
+
       const docBounds = {
-        left: workArea.left,
-        top: workArea.top,
+        left: activeDisplay.left,
+        top: activeDisplay.top,
         width: halfWidth,
-        height: workArea.height
-      };
-      const searchBounds = {
-        left: workArea.left + halfWidth,
-        top: workArea.top,
-        width: halfWidth,
-        height: workArea.height
+        height: activeDisplay.height
       };
 
-      safeResizeWindow(currentWin.id, docBounds, false, () => {
+      const searchBounds = {
+        left: activeDisplay.left + halfWidth,
+        top: activeDisplay.top,
+        width: halfWidth,
+        height: activeDisplay.height
+      };
+
+      // 1. Resize the Document Window safely
+      safeResizeWindow(currentWin, docBounds, false, () => {
+        
+        // 2. Handle the Search Window
         chrome.storage.local.get(['searchWindowId'], (result) => {
           const savedId = result.searchWindowId;
+
           if (savedId) {
-            chrome.windows.get(savedId, (win) => {
-              if (chrome.runtime.lastError || !win) {
+            chrome.windows.get(savedId, (searchWin) => {
+              if (chrome.runtime.lastError || !searchWin) {
                 createNewSearchWindow(url, searchBounds);
               } else {
                 chrome.tabs.query({ windowId: savedId, active: true }, (tabs) => {
-                  if (tabs?.length > 0) {
+                  if (tabs && tabs.length > 0) {
                     chrome.tabs.update(tabs[0].id, { url: url });
-                    safeResizeWindow(savedId, searchBounds, true);
+                    safeResizeWindow(searchWin, searchBounds, true);
                   } else {
                     createNewSearchWindow(url, searchBounds);
                   }
@@ -217,13 +123,43 @@ function processSearch(rawText, tab) {
 function createNewSearchWindow(url, bounds) {
   chrome.windows.create({
     url: url,
-    left: Math.round(bounds.left),
-    top: Math.round(bounds.top),
-    width: Math.round(bounds.width),
-    height: Math.round(bounds.height),
+    left: bounds.left,
+    top: bounds.top,
+    width: bounds.width,
+    height: bounds.height,
     focused: true,
     type: "normal"
   }, (newWin) => {
     chrome.storage.local.set({ searchWindowId: newWin.id });
   });
 }
+
+// ==========================================
+// 5. TRIGGERS: CONTEXT MENU & SHORTCUT
+// ==========================================
+
+// Trigger A: Context Menu (Works on PDFs and normal sites)
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId === "searchSplitScreen" && info.selectionText) {
+    executeSplitScreen(encodeURIComponent(info.selectionText));
+  }
+});
+
+// Trigger B: Keyboard Shortcut (Bypasses Right-Click Bans)
+chrome.commands.onCommand.addListener((command, tab) => {
+  if (command === "search_selection") {
+    // Inject a script to grab the highlighted text
+    chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => window.getSelection().toString().trim()
+    }, (results) => {
+      // Ignore if on a restricted page where scripting isn't allowed
+      if (chrome.runtime.lastError) return; 
+      
+      const selectedText = results[0]?.result;
+      if (selectedText) {
+        executeSplitScreen(encodeURIComponent(selectedText));
+      }
+    });
+  }
+});
