@@ -2,14 +2,15 @@
   "manifest_version": 3,
   "name": "SplitSearch Tool",
   "version": "2.0",
-  "description": "Split-screen research with one click (or Ctrl+Shift+S)",
+  "description": "Split-screen research with one click (or Cmd/Ctrl+Shift+S)",
   "permissions": [
     "contextMenus",
     "tabs",
     "windows",
     "storage",
     "system.display",
-    "scripting"
+    "scripting",
+    "activeTab"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -18,12 +19,12 @@
     "service_worker": "background.js"
   },
   "commands": {
-    "searchSplitScreen": {
+    "search_selection": {
       "suggested_key": {
         "default": "Ctrl+Shift+S",
-        "mac": "MacCtrl+Shift+S"
+        "mac": "Command+Shift+S"
       },
-      "description": "Search selected text in Research Window"
+      "description": "Search highlighted text in split screen"
     }
   }
 }
